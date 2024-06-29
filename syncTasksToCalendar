@@ -1,0 +1,149 @@
+function syncTasksToCalendar() {
+  try {
+    const taskListId = 'YOUR_TASK_ID'; // Your Task List ID, which you can get by running the listTaskLists helper function below
+    const calendarId = 'YOUR_CALENDAR_ID'; // Your Calendar ID, which you can get by finding it in the settings of the calendar you want to use or by running the listCalendars helper function below. Be sure to include "@group.calendar.google.com" in the ID.
+
+    const lastSyncTime = getLastSyncTime();
+    const tasks = Tasks.Tasks.list(taskListId, {
+      updatedMin: lastSyncTime.toISOString(),
+      showCompleted: false,
+      maxResults: 100  // Adjust this number if you need to process more tasks at once
+    }).items;
+
+    const calendar = Calendar.Calendars.get(calendarId);
+    const defaultDuration = calendar.defaultEventLength || 60; // in minutes, default to 60 if not set
+
+    console.log(`Processing ${tasks ? tasks.length : 0} tasks for calendar: ${calendar.summary}`);
+    console.log(`Calendar Time Zone: ${calendar.timeZone}`);
+
+    if (tasks) {
+      tasks.forEach(task => {
+        if (task.due && !task.completed) {
+          console.log(`Processing task: ${task.title}, Due: ${task.due}`);
+          const existingEvent = findExistingEvent(calendarId, task.id);
+          if (!existingEvent) {
+            const createdEvent = createCalendarEvent(calendarId, task, defaultDuration, calendar.timeZone);
+            if (createdEvent) {
+              console.log(`Created event for task: ${task.title}, Due: ${task.due}, Event Link: ${createdEvent.htmlLink}`);
+            }
+          } else {
+            console.log(`Event already exists for task: ${task.title}, Due: ${task.due}`);
+          }
+        } else if (!task.due) {
+          console.log(`Task has no due date: ${task.title}`);
+        } else if (task.completed) {
+          console.log(`Task is completed: ${task.title}`);
+        }
+      });
+    }
+
+    setLastSyncTime(new Date());
+  } catch (error) {
+    console.error('An error occurred:', error);
+  }
+}
+
+function findExistingEvent(calendarId, taskId) {
+  const oneWeekAgo = new Date();
+  oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+  const oneWeekFromNow = new Date();
+  oneWeekFromNow.setDate(oneWeekFromNow.getDate() + 7);
+  
+  const events = Calendar.Events.list(calendarId, {
+    timeMin: oneWeekAgo.toISOString(),
+    timeMax: oneWeekFromNow.toISOString(),
+    singleEvents: true,
+    q: taskId
+  }).items;
+
+  return events.find(event => event.description && event.description.includes(`Task ID: ${taskId}`));
+}
+
+function createCalendarEvent(calendarId, task, duration, calendarTimeZone) {
+  // Parse the due date string and create a Date object in UTC
+  const taskDueDate = new Date(task.due);
+  
+  // Add one day to the due date to correct for the UTC midnight issue
+  taskDueDate.setDate(taskDueDate.getDate() + 1);
+  
+  // Set the time to noon in the calendar's time zone
+  const startTime = new Date(taskDueDate.toLocaleString('en-US', {timeZone: calendarTimeZone}));
+  startTime.setHours(12, 0, 0, 0);
+  
+  const endTime = new Date(startTime.getTime() + duration * 60000);
+
+  const event = {
+    summary: task.title,
+    description: `Task ID: ${task.id}\n\n${task.notes || ''}`,
+    start: {
+      dateTime: startTime.toISOString(),
+      timeZone: calendarTimeZone
+    },
+    end: {
+      dateTime: endTime.toISOString(),
+      timeZone: calendarTimeZone
+    },
+    visibility: 'public'
+  };
+
+  try {
+    const createdEvent = Calendar.Events.insert(event, calendarId);
+    console.log(`Event created: ${createdEvent.htmlLink}`);
+    console.log(`Event details: Start: ${createdEvent.start.dateTime}, End: ${createdEvent.end.dateTime}`);
+    console.log(`Original task due date: ${task.due}`);
+    return createdEvent;
+  } catch (error) {
+    console.error('Error creating event:', error);
+    return null;
+  }
+}
+
+function getLastSyncTime() {
+  const userProperties = PropertiesService.getUserProperties();
+  const lastSyncTimeStr = userProperties.getProperty('lastSyncTime');
+  return lastSyncTimeStr ? new Date(lastSyncTimeStr) : new Date(0);
+}
+
+function setLastSyncTime(date) {
+  const userProperties = PropertiesService.getUserProperties();
+  userProperties.setProperty('lastSyncTime', date.toISOString());
+}
+
+function createTrigger() {
+  // Delete any existing triggers
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    ScriptApp.deleteTrigger(triggers[i]);
+  }
+  
+  // Create a new trigger to run every 5 minutes
+  ScriptApp.newTrigger('syncTasksToCalendar')
+    .timeBased()
+    .everyMinutes(5)
+    .create();
+}
+
+// Helper function to list all task lists (for debugging)
+function listTaskLists() {
+  const taskLists = Tasks.Tasklists.list().items;
+  console.log("Available Task Lists:");
+  
+  taskLists.forEach(list => {
+    console.log(`Task List: ${list.title} (ID: ${list.id})`);
+    const tasks = Tasks.Tasks.list(list.id).items;
+    tasks.forEach(task => {
+      console.log(`  - Task: ${task.title}, Due: ${task.due || 'Not set'}, Completed: ${task.completed ? 'Yes' : 'No'}`);
+    });
+    console.log(''); // Empty line for readability
+  });
+}
+
+// Helper function to list all calendars (for debugging)
+function listCalendars() {
+  const calendars = Calendar.CalendarList.list().items;
+  console.log("Available Calendars:");
+  
+  calendars.forEach(calendar => {
+    console.log(`Calendar: ${calendar.summary} (ID: ${calendar.id})`);
+  });
+}
